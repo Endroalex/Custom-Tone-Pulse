@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Customizable Tone Pulses</title>
+  <style>
+    body {
+      background-color: black;
+      color: indigo;
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      text-align: center;
+    }
+
+    label, select, input, button {
+      font-family: Arial, sans-serif;
+      font-size: 16px;
+      margin: 8px 0;
+    }
+
+    button {
+      padding: 8px 12px;
+      margin: 10px 5px;
+      background-color: indigo;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: #4b0082;
+    }
+
+    canvas {
+      display: block;
+      margin: 20px auto;
+      border: 1px solid indigo;
+      background-color: black;
+    }
+  </style>
+</head>
+<body>
+  <h1>Customizable Tone Pulses</h1>
+
+  <label for="waveform">Waveform:</label>
+  <select id="waveform">
+    <option value="sine">Sine</option>
+    <option value="square">Square</option>
+    <option value="triangle">Triangle</option>
+    <option value="sawtooth">Sawtooth</option>
+    <option value="reverseSaw">Reverse Sawtooth</option>
+    <option value="roundedSquare">Rounded Square</option>
+    <option value="sharpTriangle">Sharp Triangle</option>
+  </select><br>
+
+  <label for="startFreq">Starting Frequency (Hz):</label>
+  <input type="number" id="startFreq" value="20" min="1"><br>
+
+  <label for="numTones">Number of Tones:</label>
+  <input type="number" id="numTones" value="6" min="1"><br>
+
+  <label for="multiplier">Frequency Multiplier:</label>
+  <input type="number" id="multiplier" value="2" step="0.1" min="1"><br>
+
+  <button onclick="startPulses()">Start</button>
+  <button onclick="stopPulses()">Stop</button>
+  <button id="toggleVisualizer" onclick="toggleVisualizer()">Visualizer: Waveform</button>
+  <button id="toggleScale" style="display:none;" onclick="toggleScale()">Scale: Linear</button>
+
+  <canvas id="visualizer" width="800" height="200"></canvas>
+
+  <script>
+    let context;
+    let pulseNodes = [];
+    let analyser, dataArray, animationId;
+    let visualizerMode = 'waveform';
+    let freqScale = 'linear';
+
+    function getCustomWaveform(type) {
+      if (!context) return null;
+
+      let real, imag;
+
+      switch (type) {
+        case "reverseSaw":
+          real = new Float32Array([0, -1, -0.5, -0.33, -0.25]);
+          imag = new Float32Array(real.length);
+          break;
+        case "roundedSquare":
+          real = new Float32Array([0, 1, 0.5, 0.25, 0.125]);
+          imag = new Float32Array(real.length);
+          break;
+        case "sharpTriangle":
+          real = new Float32Array([0, 1, -1, 1, -1]);
+          imag = new Float32Array(real.length);
+          break;
+        default:
+          return null;
+      }
+
+      return context.createPeriodicWave(real, imag, { disableNormalization: false });
+    }
+
+    function createPulse(freq, duration, type) {
+      const osc = context.createOscillator();
+      const gain = context.createGain();
+      gain.gain.value = 0;
+
+      const customWave = getCustomWaveform(type);
+      if (customWave) {
+        osc.setPeriodicWave(customWave);
+      } else {
+        osc.type = type;
+      }
+
+      osc.frequency.value = freq;
+
+      const loopTime = duration * 2;
+      const now = context.currentTime;
+
+      for (let i = 0; i < 100; i++) {
+        const t = now + i * loopTime;
+        gain.gain.setValueAtTime(1, t);
+        gain.gain.setValueAtTime(0, t + duration);
+      }
+
+      osc.connect(gain);
+      gain.connect(analyser);
+      osc.start();
+
+      pulseNodes.push({ osc, gain });
+    }
+
+    function drawWaveform(ctx, canvas, dataArray) {
+      ctx.fillStyle = 'black';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'indigo';
+      ctx.beginPath();
+
+      const sliceWidth = canvas.width / dataArray.length;
+      let x = 0;
+
+      for (let i = 0; i < dataArray.length; i++) {
+        const v = dataArray[i] / 128.0;
+        const y = (v * canvas.height) / 2;
+
+        if (i === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+
+        x += sliceWidth;
+      }
+
+      ctx.lineTo(canvas.width, canvas.height / 2);
+      ctx.stroke();
+    }
+
+    function freqToLogIndex(freqIndex, length) {
+      const minFreq = 1;
+      const maxFreq = length;
+      const norm = freqIndex / length;
+      const logIndex = Math.floor(Math.pow(10, norm * Math.log10(maxFreq)) - 1);
+      return Math.min(logIndex, length - 1);
+    }
+
+    function drawSpectrogram(ctx, canvas, freqData) {
+      const imageData = ctx.getImageData(1, 0, canvas.width - 1, canvas.height);
+      ctx.putImageData(imageData, 0, 0);
+
+      const height = canvas.height;
+      const bins = freqData.length;
+
+      if (freqScale === 'linear') {
+        for (let i = 0; i < height; i++) {
+          const freqIndex = Math.floor(i * bins / height);
+          const value = freqData[freqIndex];
+          const intensity = value / 255;
+          const r = intensity * 255;
+          const g = intensity * 255;
+          const b = 255;
+
+          ctx.fillStyle = `rgba(${r},${g},${b},${intensity})`;
+          ctx.fillRect(canvas.width - 1, height - i - 1, 1, 1);
+        }
+      } else {
+        for (let i = 0; i < height; i++) {
+          let logIndex = freqToLogIndex(i * bins / height, bins);
+          const value = freqData[logIndex];
+          const intensity = value / 255;
+          const r = intensity * 255;
+          const g = intensity * 255;
+          const b = 255;
+
+          ctx.fillStyle = `rgba(${r},${g},${b},${intensity})`;
+          ctx.fillRect(canvas.width - 1, height - i - 1, 1, 1);
+        }
+      }
+    }
+
+    function startVisualizer() {
+      const canvas = document.getElementById('visualizer');
+      const ctx = canvas.getContext('2d');
+
+      function draw() {
+        animationId = requestAnimationFrame(draw);
+
+        if (visualizerMode === 'waveform') {
+          analyser.getByteTimeDomainData(dataArray);
+          drawWaveform(ctx, canvas, dataArray);
+        } else if (visualizerMode === 'spectrogram') {
+          analyser.getByteFrequencyData(dataArray);
+          drawSpectrogram(ctx, canvas, dataArray);
+        }
+      }
+
+      draw();
+    }
+
+    function startPulses() {
+      stopPulses();
+
+      context = new (window.AudioContext || window.webkitAudioContext)();
+
+      analyser = context.createAnalyser();
+      analyser.fftSize = 2048;
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+      analyser.connect(context.destination);
+
+      const type = document.getElementById("waveform").value;
+      const startFreq = parseFloat(document.getElementById("startFreq").value);
+      const numTones = parseInt(document.getElementById("numTones").value);
+      const multiplier = parseFloat(document.getElementById("multiplier").value);
+      const baseDuration = 0.0625;
+
+      let freq = startFreq;
+      for (let i = 0; i < numTones; i++) {
+        const duration = baseDuration * Math.pow(2, i);
+        createPulse(freq, duration, type);
+        freq *= multiplier;
+      }
+
+      startVisualizer();
+    }
+
+    function stopPulses() {
+      pulseNodes.forEach(({ osc }) => {
+        try { osc.stop(); } catch {}
+      });
+      pulseNodes = [];
+
+      if (context) {
+        context.close().then(() => context = null);
+      }
+
+      if (animationId) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
+      }
+
+      const canvas = document.getElementById('visualizer');
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function toggleVisualizer() {
+      const scaleBtn = document.getElementById('toggleScale');
+      const canvas = document.getElementById('visualizer');
+      const ctx = canvas.getContext('2d');
+
+      if (visualizerMode === 'waveform') {
+        visualizerMode = 'spectrogram';
+        document.getElementById('toggleVisualizer').textContent = 'Visualizer: Spectrogram';
+        scaleBtn.style.display = 'inline-block';
+      } else {
+        visualizerMode = 'waveform';
+        document.getElementById('toggleVisualizer').textContent = 'Visualizer: Waveform';
+        scaleBtn.style.display = 'none';
+        freqScale = 'linear';
+      }
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function toggleScale() {
+      if (freqScale === 'linear') {
+        freqScale = 'logarithmic';
+        document.getElementById('toggleScale').textContent = 'Scale: Logarithmic';
+      } else {
+        freqScale = 'linear';
+        document.getElementById('toggleScale').textContent = 'Scale: Linear';
+      }
+    }
+  </script>
+</body>
+</html>
+
